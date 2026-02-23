@@ -625,7 +625,7 @@ class BrowserWindow(QMainWindow):
         self.overlay.update_style()
         self.overlay.setVisible(bool(self.config.data["overlay_visible"]))
 
-        self.setWindowTitle("Kikoeru Subtitle ---- by MZ")
+        self.setWindowTitle("Kikoeru subtitle --by mz")
         self.resize(1360, 860)
 
         self.web = QWebEngineView(self)
@@ -807,7 +807,7 @@ class BrowserWindow(QMainWindow):
         self.web.setUrl(QUrl(url))
 
     def on_title_changed(self, title: str):
-        self.setWindowTitle(f"Subtitle Browser - {title}")
+        self.setWindowTitle(f"Kikoeru subtitle --by mz | {title}")
 
     def on_url_changed(self, qurl):
         self.url_input.setText(qurl.toString())
@@ -938,7 +938,7 @@ class BrowserWindow(QMainWindow):
 
 def main():
     app = QApplication(sys.argv)
-    app.setApplicationName("Subtitle Browser")
+    app.setApplicationName("Kikoeru subtitle --by mz")
     w = BrowserWindow()
     w.show()
     sys.exit(app.exec_())
