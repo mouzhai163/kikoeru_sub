@@ -1,0 +1,4 @@
+PyQt5>=5.15.9
+PyQtWebEngine>=5.15.7
+requests>=2.31.0
+pynput>=1.7.7
