@@ -39,3 +39,4 @@ python main.py
 
 如果对你有帮助,可以考虑给我赏口饭吃.  真的要吃不上饭了....  在线接爬虫,程序开发 nextJS全栈开发
 
+![乞讨码](image/donate-code.jpg)
