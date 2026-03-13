@@ -52,6 +52,7 @@ from PyQt5.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QDialog,
+    QTextEdit,
 )
 
 try:
@@ -378,6 +379,135 @@ JS_AUTO_ENABLE_SUBTITLE = r"""
 })();
 """
 
+JS_PLAY_MEDIA = r"""
+(() => {
+  try {
+    const app = document.querySelector('#q-app');
+    const vm = app && app.__vue__;
+    if (vm) {
+      const store = vm.$store || (vm.$root && vm.$root.$store);
+      if (store && store.state && store.state.AudioPlayer) {
+        const ap = store.state.AudioPlayer;
+        if (ap.playing === false && ap.currentSong) {
+          if (store.dispatch) {
+            store.dispatch('AudioPlayer/togglePlay').catch(()=>{});
+          }
+          store.commit('AudioPlayer/SET_PLAYING', true);
+          return 'play via store commit';
+        }
+      }
+    }
+  } catch (e) {}
+
+  const playBtn = document.querySelector('button[class*="play"], [class*="play-btn"], .q-btn[class*="play"]');
+  if (playBtn) {
+    playBtn.click();
+    return 'click play button';
+  }
+
+  const media = document.querySelector('audio,video');
+  if (media && media.paused) {
+    media.play().catch(()=>{});
+    return 'play via media';
+  }
+  return 'no action';
+})();
+"""
+
+JS_PAUSE_MEDIA = r"""
+(() => {
+  try {
+    const app = document.querySelector('#q-app');
+    const vm = app && app.__vue__;
+    if (vm) {
+      const store = vm.$store || (vm.$root && vm.$root.$store);
+      if (store && store.state && store.state.AudioPlayer && store.state.AudioPlayer.playing) {
+        if (store.dispatch) {
+          store.dispatch('AudioPlayer/togglePlay').catch(()=>{});
+        }
+        store.commit('AudioPlayer/SET_PLAYING', false);
+        return 'pause via store';
+      }
+    }
+  } catch (e) {}
+
+  const media = document.querySelector('audio,video');
+  if (media && !media.paused) {
+    media.pause();
+    return 'pause via media';
+  }
+  return 'no action';
+})();
+"""
+
+JS_SET_GAIN = r"""
+(() => {
+  const gain = __GAIN_VALUE__;
+  const media = document.querySelector('audio,video');
+  if (!media) return 'no media';
+
+  if (window.__gainMedia && window.__gainMedia !== media) {
+    try {
+      if (window.__gainSource) window.__gainSource.disconnect();
+      if (window.__gainNode) window.__gainNode.disconnect();
+      if (window.__gainContext) window.__gainContext.close();
+    } catch(e) {}
+    delete window.__gainContext;
+    delete window.__gainSource;
+    delete window.__gainNode;
+    delete window.__gainMedia;
+    delete window.__gainUsingGainNode;
+  }
+
+  if (!window.__gainContext) {
+    try {
+      const AudioCtx = window.AudioContext || window.webkitAudioContext;
+      window.__gainContext = new AudioCtx();
+      window.__gainMedia = media;
+      window.__gainSource = window.__gainContext.createMediaElementSource(media);
+      window.__gainNode = window.__gainContext.createGain();
+      window.__gainSource.connect(window.__gainContext.destination);
+      window.__gainUsingGainNode = false;
+    } catch(e) {
+      return 'init error: ' + e.message;
+    }
+  }
+
+  window.__gainNode.gain.value = gain;
+
+  if (gain > 1 && !window.__gainUsingGainNode) {
+    try {
+      window.__gainSource.disconnect(window.__gainContext.destination);
+      window.__gainSource.connect(window.__gainNode);
+      window.__gainNode.connect(window.__gainContext.destination);
+      window.__gainUsingGainNode = true;
+    } catch(e) { return 'connect error: ' + e.message; }
+  } else if (gain === 1 && window.__gainUsingGainNode) {
+    try {
+      window.__gainNode.disconnect(window.__gainContext.destination);
+      window.__gainSource.disconnect(window.__gainNode);
+      window.__gainSource.connect(window.__gainContext.destination);
+      window.__gainUsingGainNode = false;
+    } catch(e) { return 'disconnect error: ' + e.message; }
+  }
+
+  if (window.__gainContext.state === 'suspended') {
+    window.__gainContext.resume();
+  }
+  return 'gain set to ' + gain;
+})();
+"""
+
+# 日志收集
+DEBUG_LOGS = []
+
+def log_debug(msg):
+    import datetime
+    ts = datetime.datetime.now().strftime("%H:%M:%S")
+    DEBUG_LOGS.append(f"[{ts}] {msg}")
+    if len(DEBUG_LOGS) > 200:
+        DEBUG_LOGS.pop(0)
+
 
 class ConfigStore:
     def __init__(self):
@@ -396,6 +526,13 @@ class ConfigStore:
             "overlay_visible": True,
             "overlay_locked": False,
             "poll_interval_ms": 180,
+            "volume_gain": 1.0,
+            "hotkeys": {
+                "toggle_overlay": "<ctrl>+<alt>+s",
+                "toggle_lock": "<ctrl>+<alt>+l",
+                "inc_font": "<ctrl>+<alt>+<up>",
+                "dec_font": "<ctrl>+<alt>+<down>",
+            },
         }
         self.load()
 
@@ -544,21 +681,28 @@ class HotkeyBridge(QWidget):
 
 
 class HotkeyManager:
-    def __init__(self, bridge: HotkeyBridge):
+    def __init__(self, bridge: HotkeyBridge, hotkeys_config: dict):
         self.bridge = bridge
+        self.hotkeys_config = hotkeys_config
         self.listener = None
 
     def start(self):
         if keyboard is None:
             return
-        self.listener = keyboard.GlobalHotKeys(
-            {
-                "<ctrl>+<alt>+s": self.bridge.toggle_overlay.emit,
-                "<ctrl>+<alt>+l": self.bridge.toggle_lock.emit,
-                "<ctrl>+<alt>+<up>": self.bridge.inc_font.emit,
-                "<ctrl>+<alt>+<down>": self.bridge.dec_font.emit,
-            }
-        )
+        hotkeys = {}
+        toggle_overlay = self.hotkeys_config.get("toggle_overlay", "<ctrl>+<alt>+s")
+        toggle_lock = self.hotkeys_config.get("toggle_lock", "<ctrl>+<alt>+l")
+        inc_font = self.hotkeys_config.get("inc_font", "<ctrl>+<alt>+<up>")
+        dec_font = self.hotkeys_config.get("dec_font", "<ctrl>+<alt>+<down>")
+        if toggle_overlay:
+            hotkeys[toggle_overlay] = self.bridge.toggle_overlay.emit
+        if toggle_lock:
+            hotkeys[toggle_lock] = self.bridge.toggle_lock.emit
+        if inc_font:
+            hotkeys[inc_font] = self.bridge.inc_font.emit
+        if dec_font:
+            hotkeys[dec_font] = self.bridge.dec_font.emit
+        self.listener = keyboard.GlobalHotKeys(hotkeys)
         self.listener.start()
 
     def stop(self):
@@ -590,7 +734,6 @@ class QuietWebEnginePage(QWebEnginePage):
         )
         if any(k in text for k in noisy):
             return
-        # Mute generic page console noise in terminal.
         return
 
 
@@ -665,7 +808,7 @@ class BrowserWindow(QMainWindow):
         self.hotkey_bridge.toggle_lock.connect(self.toggle_lock)
         self.hotkey_bridge.inc_font.connect(self.increase_font)
         self.hotkey_bridge.dec_font.connect(self.decrease_font)
-        self.hotkeys = HotkeyManager(self.hotkey_bridge)
+        self.hotkeys = HotkeyManager(self.hotkey_bridge, self.config.data.get("hotkeys", {}))
         self.hotkeys.start()
 
         self._build_ui()
@@ -709,6 +852,18 @@ class BrowserWindow(QMainWindow):
         nav_row.addWidget(self.go_btn)
         nav_row.addWidget(self.settings_btn)
 
+        # 音量增益滑块
+        nav_row.addWidget(QLabel("音量"))
+        self.gain_slider = FluentSlider(Qt.Horizontal)
+        self.gain_slider.setRange(100, 1000)
+        self.gain_slider.setValue(int(self.config.data.get("volume_gain", 1.0) * 100))
+        self.gain_slider.setMaximumWidth(100)
+        self.gain_slider.valueChanged.connect(self.on_gain_changed)
+        nav_row.addWidget(self.gain_slider)
+        self.gain_label = QLabel(f"{self.config.data.get('volume_gain', 1.0):.1f}x")
+        self.gain_label.setMinimumWidth(35)
+        nav_row.addWidget(self.gain_label)
+
         settings = QWidget()
         form = QFormLayout(settings)
         form.setContentsMargins(0, 0, 0, 0)
@@ -727,7 +882,7 @@ class BrowserWindow(QMainWindow):
         dlg = QDialog(self)
         dlg.setWindowTitle("字幕设置")
         dlg.setModal(False)
-        dlg.resize(460, 320)
+        dlg.resize(460, 450)
         v = QVBoxLayout(dlg)
         v.setContentsMargins(14, 14, 14, 14)
         v.setSpacing(12)
@@ -765,20 +920,53 @@ class BrowserWindow(QMainWindow):
         width_row.addWidget(height_spin)
         v.addLayout(width_row)
 
-        hotkeys = QLabel(
-            "快捷键:\n"
-            "Ctrl+Alt+S 显示/隐藏字幕窗\n"
-            "Ctrl+Alt+L 锁定/解锁字幕窗\n"
-            "Ctrl+Alt+Up/Down 字号增减"
-        )
-        hotkeys.setWordWrap(True)
-        v.addWidget(hotkeys)
+        hotkeys_title = QLabel("快捷键设置 (格式: <ctrl>+<alt>+s)")
+        hotkeys_title.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        v.addWidget(hotkeys_title)
+
+        self.hotkey_inputs = {}
+        hotkey_labels = {
+            "toggle_overlay": "显示/隐藏字幕窗",
+            "toggle_lock": "锁定/解锁字幕窗",
+            "inc_font": "增大字号",
+            "dec_font": "减小字号",
+        }
+        hotkeys_config = self.config.data.get("hotkeys", {})
+        for key, label_text in hotkey_labels.items():
+            row = QHBoxLayout()
+            row.addWidget(QLabel(label_text))
+            input_field = LineEdit()
+            input_field.setText(hotkeys_config.get(key, ""))
+            input_field.setPlaceholderText("例如: <ctrl>+<alt>+s")
+            self.hotkey_inputs[key] = input_field
+            row.addWidget(input_field, 1)
+            v.addLayout(row)
 
         close_btn = FluentButton("关闭")
-        close_btn.clicked.connect(dlg.close)
+        close_btn.clicked.connect(lambda: self._save_and_reload_hotkeys(dlg))
         v.addWidget(close_btn)
 
+        # 日志显示区域
+        log_title = QLabel("调试日志")
+        log_title.setStyleSheet("font-weight: bold; margin-top: 10px;")
+        v.addWidget(log_title)
+        self.log_text = QTextEdit()
+        self.log_text.setReadOnly(True)
+        self.log_text.setMaximumHeight(120)
+        self.log_text.setPlainText("\n".join(DEBUG_LOGS) or "暂无日志")
+        v.addWidget(self.log_text)
+
         dlg.show()
+
+    def _save_and_reload_hotkeys(self, dlg):
+        new_hotkeys = {}
+        for key, input_field in self.hotkey_inputs.items():
+            new_hotkeys[key] = input_field.text().strip()
+        self.config.data["hotkeys"] = new_hotkeys
+        self.hotkeys.stop()
+        self.hotkeys = HotkeyManager(self.hotkey_bridge, new_hotkeys)
+        self.hotkeys.start()
+        dlg.close()
 
     def position_overlay_bottom(self):
         screen = QApplication.primaryScreen()
@@ -814,6 +1002,10 @@ class BrowserWindow(QMainWindow):
 
     def on_page_loaded(self, _ok: bool):
         self.ensure_event_bridge()
+        # 延迟应用保存的音量增益设置
+        gain = self.config.data.get("volume_gain", 1.0)
+        if gain > 1.0:
+            QTimer.singleShot(1500, self._apply_saved_gain)
 
     def ensure_event_bridge(self):
         self.ensure_web_active()
@@ -821,6 +1013,12 @@ class BrowserWindow(QMainWindow):
 
     def trigger_auto_subtitle_enable(self):
         self.web.page().runJavaScript(JS_AUTO_ENABLE_SUBTITLE)
+
+    def _apply_saved_gain(self):
+        gain = self.config.data.get("volume_gain", 1.0)
+        log_debug(f"启动应用增益: {gain}")
+        js = JS_SET_GAIN.replace("__GAIN_VALUE__", str(gain))
+        self.web.page().runJavaScript(js, lambda r: self._log_js_result("启动增益", r))
 
     def handle_poll_result(self, result):
         if not isinstance(result, dict):
@@ -902,6 +1100,14 @@ class BrowserWindow(QMainWindow):
     def set_overlay_locked(self, locked: bool):
         self.overlay.set_locked(bool(locked))
 
+    def on_gain_changed(self, value: int):
+        gain = value / 100.0
+        self.gain_label.setText(f"{gain:.1f}x")
+        self.config.data["volume_gain"] = gain
+        log_debug(f"设置音量增益: {gain}")
+        js = JS_SET_GAIN.replace("__GAIN_VALUE__", str(gain))
+        self.web.page().runJavaScript(js, lambda r: self._log_js_result("增益", r))
+
     def pick_color(self):
         color = QColorDialog.getColor(self.overlay.font_color, self, "选择字幕颜色")
         if not color.isValid():
@@ -910,7 +1116,20 @@ class BrowserWindow(QMainWindow):
         self.overlay.update_style()
 
     def toggle_overlay(self):
-        self.overlay.setVisible(not self.overlay.isVisible())
+        visible = not self.overlay.isVisible()
+        self.overlay.setVisible(visible)
+        log_debug(f"toggle_overlay: visible={visible}")
+        if visible:
+            log_debug("执行播放脚本...")
+            self.web.page().runJavaScript(JS_PLAY_MEDIA, lambda r: self._log_js_result("播放", r))
+        else:
+            log_debug("执行暂停脚本...")
+            self.web.page().runJavaScript(JS_PAUSE_MEDIA, lambda r: self._log_js_result("暂停", r))
+
+    def _log_js_result(self, action, result):
+        log_debug(f"{action}结果: {result}")
+        if hasattr(self, 'log_text') and self.log_text:
+            self.log_text.setPlainText("\n".join(DEBUG_LOGS))
 
     def toggle_lock(self):
         self.set_overlay_locked(not self.overlay.locked)
